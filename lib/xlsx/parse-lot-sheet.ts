@@ -149,7 +149,7 @@ export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
     defval: null,
   });
 
-  const lots: LotRecord[] = [];
+  const lotsByLote = new Map<string, LotRecord>();
   // Detect header row — skip the first row if NUMEROLOTE is non-numeric text in col 1
   const [firstRow, ...rest] = rows;
   const dataRows =
@@ -174,13 +174,13 @@ export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
     const pmsProto = toStr(cell(row, PMS.PROTOCOLOPM_R1));
     const pmsVal = toNum(cell(row, PMS.PMS_R1));
 
-    lots.push({
+    const incoming: LotRecord = {
       numerolote,
       cultivar: toStr(cell(row, IDENTIFICACAO.CULTIVAR)),
       classe: toStr(cell(row, IDENTIFICACAO.CLASSE)),
       peneira: toStr(cell(row, IDENTIFICACAO.PENEIRA)),
       unidade: toStr(cell(row, IDENTIFICACAO.UNIDADE)),
-      empresa: toStr(cell(row, IDENTIFICACAO.UNIDADE)), // empresa inferred from UNIDADE if no dedicated column
+      empresa: toStr(cell(row, IDENTIFICACAO.UNIDADE)),
       represents_original: toStr(cell(row, IDENTIFICACAO.REPRES_ORIGINAL)),
       represents_sc40: toStr(cell(row, IDENTIFICACAO.REPRES_SC40)),
       pesobag: toNum(cell(row, IDENTIFICACAO.PESOBAG)),
@@ -202,8 +202,55 @@ export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
       umidade,
       dm,
       gp,
-    });
+    };
+
+    const existing = lotsByLote.get(numerolote);
+    if (!existing) {
+      lotsByLote.set(numerolote, incoming);
+    } else {
+      lotsByLote.set(numerolote, mergeLot(existing, incoming));
+    }
   }
 
-  return lots;
+  return Array.from(lotsByLote.values());
+}
+
+// Combine two spreadsheet rows for the same NUMEROLOTE: keep the most recent
+// non-null identification fields and concatenate rounds, renumbering repeats
+// so the DB unique(lot_id, round) constraint still holds.
+function mergeLot(existing: LotRecord, incoming: LotRecord): LotRecord {
+  const pick = <T,>(a: T | null, b: T | null): T | null => (b ?? a);
+  return {
+    numerolote: existing.numerolote,
+    cultivar: pick(existing.cultivar, incoming.cultivar),
+    classe: pick(existing.classe, incoming.classe),
+    peneira: pick(existing.peneira, incoming.peneira),
+    unidade: pick(existing.unidade, incoming.unidade),
+    empresa: pick(existing.empresa, incoming.empresa),
+    represents_original: pick(existing.represents_original, incoming.represents_original),
+    represents_sc40: pick(existing.represents_sc40, incoming.represents_sc40),
+    pesobag: pick(existing.pesobag, incoming.pesobag),
+    pesolote: pick(existing.pesolote, incoming.pesolote),
+    mer: pick(existing.mer, incoming.mer),
+    tsim: pick(existing.tsim, incoming.tsim),
+    statuslt: pick(existing.statuslt, incoming.statuslt),
+    tsi: pick(existing.tsi, incoming.tsi),
+    ccheck: pick(existing.ccheck, incoming.ccheck),
+    germ_ofic: pick(existing.germ_ofic, incoming.germ_ofic),
+    bas: pick(existing.bas, incoming.bas),
+    databas: pick(existing.databas, incoming.databas),
+    tz: renumber([...existing.tz, ...incoming.tz], 4) as LotRecord["tz"],
+    ea72: renumber([...existing.ea72, ...incoming.ea72], 2),
+    ea24: renumber([...existing.ea24, ...incoming.ea24], 1),
+    ea48: renumber([...existing.ea48, ...incoming.ea48], 3),
+    areia: renumber([...existing.areia, ...incoming.areia], 8),
+    pms: pick(existing.pms, incoming.pms),
+    umidade: renumber([...existing.umidade, ...incoming.umidade], 4),
+    dm: renumber([...existing.dm, ...incoming.dm], 4),
+    gp: renumber([...existing.gp, ...incoming.gp], 3),
+  };
+}
+
+function renumber<T extends { round: number }>(items: T[], max: number): T[] {
+  return items.slice(0, max).map((item, i) => ({ ...item, round: i + 1 }));
 }
