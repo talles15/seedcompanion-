@@ -1,5 +1,5 @@
 import { formatDash, formatDateBR } from "@/lib/format";
-import type { AreiaRoundRow } from "@/lib/lots";
+import type { AreiaRoundRow } from "@/lib/lot-shared";
 
 export function AreiaTable({ rounds }: { rounds: AreiaRoundRow[] }) {
   const byRound = new Map(rounds.map((r) => [r.round, r]));

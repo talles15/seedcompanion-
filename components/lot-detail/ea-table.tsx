@@ -1,5 +1,5 @@
 import { formatDash, formatDateBR } from "@/lib/format";
-import type { EARoundRow } from "@/lib/lots";
+import type { EARoundRow } from "@/lib/lot-shared";
 
 export function EATable({
   title,

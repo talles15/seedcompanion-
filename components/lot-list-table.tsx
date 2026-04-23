@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import type { LotRow } from "@/lib/lots";
-import { bestValue } from "@/lib/lots";
+import type { LotRow } from "@/lib/lot-shared";
+import { bestValue } from "@/lib/lot-shared";
 import { formatDash } from "@/lib/format";
 
 export function LotListTable({ lots }: { lots: LotRow[] }) {

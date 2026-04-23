@@ -1,5 +1,5 @@
 import { formatDash, formatDateBR } from "@/lib/format";
-import type { TZRoundRow } from "@/lib/lots";
+import type { TZRoundRow } from "@/lib/lot-shared";
 
 const ROUND_COUNT = 4;
 

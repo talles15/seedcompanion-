@@ -3,7 +3,7 @@
 import { Download } from "lucide-react";
 import { useState } from "react";
 import { generateHistoryPdf } from "@/components/pdf/history-pdf";
-import type { LotRow } from "@/lib/lots";
+import type { LotRow } from "@/lib/lot-shared";
 import type { ThresholdMap } from "@/lib/thresholds";
 
 export function ExportPdfButton({

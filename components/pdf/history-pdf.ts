@@ -2,7 +2,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import type { LotRow } from "@/lib/lots";
+import type { LotRow } from "@/lib/lot-shared";
 import { applyThreshold, type ThresholdMap } from "@/lib/thresholds";
 
 type HistoryRow = {
