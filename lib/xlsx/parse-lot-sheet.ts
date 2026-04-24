@@ -1,24 +1,23 @@
 import * as XLSX from "xlsx";
-import {
-  AREIA_ROUNDS,
-  DM_ROUNDS,
-  EA24_ROUNDS,
-  EA48_ROUNDS,
-  EA72_ROUNDS,
-  GP_ROUNDS,
-  IDENTIFICACAO,
-  PMS,
-  STATUS_CONTROLE,
-  TZ_ROUNDS,
-  UMIDADE_ROUNDS,
-  tzCol,
-} from "./column-map";
-import type { LotRecord, Maybe, TZRound } from "./schema";
+import type {
+  AreiaRound,
+  EARound,
+  GPRound,
+  LotRecord,
+  Maybe,
+  SimpleRound,
+  TZRound,
+} from "./schema";
 
 type Row = Array<string | number | boolean | Date | null | undefined>;
 
-function cell(row: Row, index1Based: number): unknown {
-  return row[index1Based - 1];
+function normalize(s: unknown): string {
+  return String(s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
 }
 
 function toStr(v: unknown): Maybe<string> {
@@ -41,7 +40,6 @@ function toDate(v: unknown): Maybe<string> {
   if (v === null || v === undefined || v === "") return null;
   if (v instanceof Date) return isNaN(v.getTime()) ? null : v.toISOString().slice(0, 10);
   if (typeof v === "number") {
-    // Excel serial date
     const parsed = XLSX.SSF.parse_date_code(v);
     if (!parsed) return null;
     const d = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d));
@@ -49,7 +47,6 @@ function toDate(v: unknown): Maybe<string> {
   }
   const s = String(v).trim();
   if (!s || s === "-") return null;
-  // Accept dd/mm/yyyy, yyyy-mm-dd
   const br = /^(\d{2})[/-](\d{2})[/-](\d{4})$/.exec(s);
   if (br) return `${br[3]}-${br[2]}-${br[1]}`;
   const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
@@ -58,84 +55,116 @@ function toDate(v: unknown): Maybe<string> {
   return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
-function parseTZRound(row: Row, start: number, round: 1 | 2 | 3 | 4): TZRound | null {
-  const protocolo = toStr(cell(row, tzCol(start, "protocolo")));
-  const vigor = toNum(cell(row, tzCol(start, "vigor")));
-  const viab = toNum(cell(row, tzCol(start, "viabilidade")));
-  const data = toDate(cell(row, tzCol(start, "data")));
+/** Name-based accessor: looks up a column's index by header name and reads its cell. */
+class RowReader {
+  constructor(
+    private readonly row: Row,
+    private readonly headers: Map<string, number>
+  ) {}
+
+  get(...names: string[]): unknown {
+    for (const n of names) {
+      const idx = this.headers.get(normalize(n));
+      if (idx !== undefined) {
+        const v = this.row[idx];
+        if (v !== null && v !== undefined && v !== "") return v;
+      }
+    }
+    return null;
+  }
+
+  str(...names: string[]) {
+    return toStr(this.get(...names));
+  }
+  num(...names: string[]) {
+    return toNum(this.get(...names));
+  }
+  date(...names: string[]) {
+    return toDate(this.get(...names));
+  }
+
+  hasAny(...names: string[]): boolean {
+    return names.some((n) => this.headers.has(normalize(n)));
+  }
+}
+
+function tzRound(r: RowReader, round: 1 | 2 | 3 | 4): TZRound | null {
+  const s = `_R${round}`;
+  const protocolo = r.str(`PROTOCOLOTZ${s}`);
+  const vigor = r.num(`VIGOR${s}`);
+  const viab = r.num(`VIABILIDADE${s}`);
+  const data = r.date(`DATAANALISETETRA${s}`, `DATATETRA${s}`, `DATATZ${s}`);
   if (!protocolo && vigor === null && viab === null && !data) return null;
   return {
     round,
     protocolo,
     vigor,
     viabilidade: viab,
-    c1_c2: toNum(cell(row, tzCol(start, "c1_c2"))),
-    c1_c2_c3: toNum(cell(row, tzCol(start, "c1_c2_c3"))),
-    c3r: toNum(cell(row, tzCol(start, "c3r"))),
-    soma_1a3r: toNum(cell(row, tzCol(start, "soma_1a3r"))),
-    dm_c1_8: toNum(cell(row, tzCol(start, "dm_c1_8"))),
-    umid_c1_8: toNum(cell(row, tzCol(start, "umid_c1_8"))),
-    perc_c1_8: toNum(cell(row, tzCol(start, "perc_c1_8"))),
-    mort_mecanico: toNum(cell(row, tzCol(start, "mort_mecanico"))),
-    mort_umidade: toNum(cell(row, tzCol(start, "mort_umidade"))),
-    percevejo: toNum(cell(row, tzCol(start, "percevejo"))),
-    sem_duras: toNum(cell(row, tzCol(start, "sem_duras"))),
-    esverdeadas: toNum(cell(row, tzCol(start, "esverdeadas"))),
-    helicoverpa: toNum(cell(row, tzCol(start, "helicoverpa"))),
+    c1_c2: r.num(`SOMAC1C2${s}`),
+    c1_c2_c3: r.num(`SOMAC1C2C3${s}`),
+    c3r: r.num(`TRESR${s}`, `3R${s}`),
+    soma_1a3r: r.num(`SOMA1A3R${s}`),
+    dm_c1_8: r.num(`DANOMECANICO_1A8${s}`, `DM_1A8${s}`),
+    umid_c1_8: r.num(`UMIDADE_1A8${s}`, `UMID_1A8${s}`),
+    perc_c1_8: r.num(`PERCEVEJO_1A8${s}`, `PERC_1A8${s}`),
+    mort_mecanico: r.num(`MORTA_MECANICO_6A8${s}`, `MORTAMECANICO${s}`),
+    mort_umidade: r.num(`MORTA_UMIDADE_6_8${s}`, `MORTA_UMIDADE_6A8${s}`),
+    percevejo: r.num(`MORTA_PERCEVEJO_6A8${s}`, `PERCEVEJO${s}`),
+    sem_duras: r.num(`SEMENTESDURAS${s}`, `SEM_DURAS${s}`),
+    esverdeadas: r.num(`SEMENTEESVERDEADA${s}`, `ESVERDEADAS${s}`, `ESVERDEADO${s}`),
+    helicoverpa: r.num(`HELICOVERPA${s}`),
     data,
   };
 }
 
-function parseEARounds(row: Row, rounds: { round: number; start: number }[]) {
-  return rounds
-    .map(({ round, start }) => {
-      const protocolo = toStr(cell(row, start));
-      const normais = toNum(cell(row, start + 1));
-      const fortes = toNum(cell(row, start + 2));
-      const fracas = toNum(cell(row, start + 3));
-      const data = toDate(cell(row, start + 4));
-      if (!protocolo && normais === null && fortes === null && fracas === null && !data) {
-        return null;
-      }
-      return { round, protocolo, normais, fortes, fracas, data };
-    })
-    .filter((x): x is NonNullable<typeof x> => !!x);
+function eaRound(r: RowReader, prefix: "EA72" | "EA48" | "EA24", round: number): EARound | null {
+  const s = `_R${round}`;
+  const protocolo = r.str(`PROTOCOLO${prefix}${s}`);
+  const normais = r.num(`${prefix}_NORMAIS${s}`);
+  const fortes = r.num(`${prefix}_FORTES${s}`);
+  const fracas = r.num(`${prefix}_FRACAS${s}`);
+  const data = r.date(`DATA${prefix}${s}`, `${prefix}_DATA${s}`);
+  if (!protocolo && normais === null && fortes === null && fracas === null && !data) {
+    return null;
+  }
+  return { round, protocolo, normais, fortes, fracas, data };
 }
 
-function parseAreiaRounds(row: Row) {
-  return AREIA_ROUNDS.map(({ round, start }) => {
-    const protocolo = toStr(cell(row, start));
-    const l1 = toNum(cell(row, start + 1));
-    const l2 = toNum(cell(row, start + 2));
-    const resultado = toNum(cell(row, start + 3));
-    const data = toDate(cell(row, start + 4));
-    if (!protocolo && l1 === null && l2 === null && resultado === null && !data) {
-      return null;
-    }
-    return { round, protocolo, l1, l2, resultado, data };
-  }).filter((x): x is NonNullable<typeof x> => !!x);
+function areiaRound(r: RowReader, round: number): AreiaRound | null {
+  const s = `_R${round}`;
+  const protocolo = r.str(`PROTOCOLOAR${s}`, `PROTOCOLOAREIA${s}`);
+  const l1 = r.num(`AREIAL1${s}`);
+  const l2 = r.num(`AREIAL2${s}`);
+  const resultado = r.num(`AREIARESULT${s}`, `AREIARESULTADO${s}`);
+  const data = r.date(`AREIADATA${s}`, `DATAAREIA${s}`);
+  if (!protocolo && l1 === null && l2 === null && resultado === null && !data) return null;
+  return { round, protocolo, l1, l2, resultado, data };
 }
 
-function parseSimpleRounds(row: Row, rounds: { round: number; start: number }[]) {
-  return rounds
-    .map(({ round, start }) => {
-      const valor = toNum(cell(row, start));
-      const data = toDate(cell(row, start + 1));
-      if (valor === null && !data) return null;
-      return { round, valor, data };
-    })
-    .filter((x): x is NonNullable<typeof x> => !!x);
+function umidadeRound(r: RowReader, round: number): SimpleRound | null {
+  const s = `_R${round}`;
+  const valor = r.num(`UMIDADE${s}`);
+  const data = r.date(`DATAUMIDADE${s}`, `UMIDADE_DATA${s}`);
+  if (valor === null && !data) return null;
+  return { round, valor, data };
 }
 
-function parseGPRounds(row: Row) {
-  return GP_ROUNDS.map(({ round, start }) => {
-    const protocolo = toStr(cell(row, start));
-    const normais = toNum(cell(row, start + 1));
-    const data = toDate(cell(row, start + 2));
-    const pc_pureza = toNum(cell(row, start + 3));
-    if (!protocolo && normais === null && !data && pc_pureza === null) return null;
-    return { round, protocolo, normais, data, pc_pureza };
-  }).filter((x): x is NonNullable<typeof x> => !!x);
+function dmRound(r: RowReader, round: number): SimpleRound | null {
+  const s = `_R${round}`;
+  const valor = r.num(`DM${s}`, `DANOMECANICO${s}`);
+  const data = r.date(`DATADM${s}`, `DM_DATA${s}`);
+  if (valor === null && !data) return null;
+  return { round, valor, data };
+}
+
+function gpRound(r: RowReader, round: number): GPRound | null {
+  const s = `_R${round}`;
+  const protocolo = r.str(`PROTOCOLOGP${s}`);
+  const normais = r.num(`GP_NORMAIS${s}`, `GERMP_NORMAIS${s}`);
+  const data = r.date(`DATAGP${s}`, `GP_DATA${s}`);
+  const pc_pureza = r.num(`PC_PUREZA${s}`, `PUREZA${s}`);
+  if (!protocolo && normais === null && !data && pc_pureza === null) return null;
+  return { round, protocolo, normais, data, pc_pureza };
 }
 
 export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
@@ -148,51 +177,78 @@ export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
     raw: true,
     defval: null,
   });
+  if (rows.length < 2) return [];
+
+  const headerRow = rows[0] ?? [];
+  const headers = new Map<string, number>();
+  for (let i = 0; i < headerRow.length; i++) {
+    const name = normalize(headerRow[i]);
+    if (name && !headers.has(name)) headers.set(name, i);
+  }
+
+  if (!headers.has("NUMEROLOTE")) {
+    throw new Error(
+      'Cabeçalho não encontrado: coluna "NUMEROLOTE" não existe na primeira linha.'
+    );
+  }
 
   const lotsByLote = new Map<string, LotRecord>();
-  // Detect header row — skip the first row if NUMEROLOTE is non-numeric text in col 1
-  const [firstRow, ...rest] = rows;
-  const dataRows =
-    firstRow && /numerolote/i.test(String(cell(firstRow, 1) ?? "")) ? rest : rows;
 
-  for (const row of dataRows) {
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
     if (!row) continue;
-    const numerolote = toStr(cell(row, IDENTIFICACAO.NUMEROLOTE));
+    const reader = new RowReader(row, headers);
+    const numerolote = reader.str("NUMEROLOTE");
     if (!numerolote) continue;
 
-    const tz = TZ_ROUNDS.map(({ round, start }) => parseTZRound(row, start, round)).filter(
-      (x): x is TZRound => !!x
-    );
-    const ea72 = parseEARounds(row, EA72_ROUNDS);
-    const ea24 = parseEARounds(row, EA24_ROUNDS);
-    const ea48 = parseEARounds(row, EA48_ROUNDS);
-    const areia = parseAreiaRounds(row);
-    const umidade = parseSimpleRounds(row, UMIDADE_ROUNDS);
-    const dm = parseSimpleRounds(row, DM_ROUNDS);
-    const gp = parseGPRounds(row);
+    const tz = ([1, 2, 3, 4] as const)
+      .map((n) => tzRound(reader, n))
+      .filter((x): x is TZRound => !!x);
 
-    const pmsProto = toStr(cell(row, PMS.PROTOCOLOPM_R1));
-    const pmsVal = toNum(cell(row, PMS.PMS_R1));
+    const ea72 = [1, 2]
+      .map((n) => eaRound(reader, "EA72", n))
+      .filter((x): x is EARound => !!x);
+    const ea24 = [1]
+      .map((n) => eaRound(reader, "EA24", n))
+      .filter((x): x is EARound => !!x);
+    const ea48 = [1, 2, 3]
+      .map((n) => eaRound(reader, "EA48", n))
+      .filter((x): x is EARound => !!x);
+    const areia = [1, 2, 3, 4, 5, 6, 7, 8]
+      .map((n) => areiaRound(reader, n))
+      .filter((x): x is AreiaRound => !!x);
+    const umidade = [1, 2, 3, 4]
+      .map((n) => umidadeRound(reader, n))
+      .filter((x): x is SimpleRound => !!x);
+    const dm = [1, 2, 3, 4]
+      .map((n) => dmRound(reader, n))
+      .filter((x): x is SimpleRound => !!x);
+    const gp = [1, 2, 3]
+      .map((n) => gpRound(reader, n))
+      .filter((x): x is GPRound => !!x);
+
+    const pmsProto = reader.str("PROTOCOLOPM_R1");
+    const pmsVal = reader.num("PMS_R1");
 
     const incoming: LotRecord = {
       numerolote,
-      cultivar: toStr(cell(row, IDENTIFICACAO.CULTIVAR)),
-      classe: toStr(cell(row, IDENTIFICACAO.CLASSE)),
-      peneira: toStr(cell(row, IDENTIFICACAO.PENEIRA)),
-      unidade: toStr(cell(row, IDENTIFICACAO.UNIDADE)),
-      empresa: toStr(cell(row, IDENTIFICACAO.UNIDADE)),
-      represents_original: toStr(cell(row, IDENTIFICACAO.REPRES_ORIGINAL)),
-      represents_sc40: toStr(cell(row, IDENTIFICACAO.REPRES_SC40)),
-      pesobag: toNum(cell(row, IDENTIFICACAO.PESOBAG)),
-      pesolote: toNum(cell(row, IDENTIFICACAO.PESOLOTE)),
-      mer: toNum(cell(row, STATUS_CONTROLE.MER)),
-      tsim: toStr(cell(row, STATUS_CONTROLE.TSIM)),
-      statuslt: toStr(cell(row, STATUS_CONTROLE.STATUSLT)),
-      tsi: toStr(cell(row, STATUS_CONTROLE.TSI)),
-      ccheck: toStr(cell(row, STATUS_CONTROLE.CCHECK)),
-      germ_ofic: toNum(cell(row, STATUS_CONTROLE.GERM_OFIC)),
-      bas: toNum(cell(row, STATUS_CONTROLE.BAS)),
-      databas: toDate(cell(row, STATUS_CONTROLE.DATABAS)),
+      cultivar: reader.str("CULTIVAR"),
+      classe: reader.str("CLASSE"),
+      peneira: reader.str("PENEIRA"),
+      unidade: reader.str("UNIDADE"),
+      empresa: reader.str("EMPRESA", "UNIDADE"),
+      represents_original: reader.str("REPRES_ORIGINAL"),
+      represents_sc40: reader.str("REPRES_SC40"),
+      pesobag: reader.num("PESOBAG"),
+      pesolote: reader.num("PESOLOTE"),
+      mer: reader.num("MER"),
+      tsim: reader.str("TSIM"),
+      statuslt: reader.str("STATUSLT"),
+      tsi: reader.str("TSI"),
+      ccheck: reader.str("CCHECK"),
+      germ_ofic: reader.num("GERM_OFIC", "GERMINACAO_OFICIAL"),
+      bas: reader.num("BAS"),
+      databas: reader.date("DATABAS", "DATA_BAS"),
       tz,
       ea72,
       ea24,
@@ -205,21 +261,14 @@ export function parseLotSheet(fileBuffer: ArrayBuffer): LotRecord[] {
     };
 
     const existing = lotsByLote.get(numerolote);
-    if (!existing) {
-      lotsByLote.set(numerolote, incoming);
-    } else {
-      lotsByLote.set(numerolote, mergeLot(existing, incoming));
-    }
+    lotsByLote.set(numerolote, existing ? mergeLot(existing, incoming) : incoming);
   }
 
   return Array.from(lotsByLote.values());
 }
 
-// Combine two spreadsheet rows for the same NUMEROLOTE: keep the most recent
-// non-null identification fields and concatenate rounds, renumbering repeats
-// so the DB unique(lot_id, round) constraint still holds.
 function mergeLot(existing: LotRecord, incoming: LotRecord): LotRecord {
-  const pick = <T,>(a: T | null, b: T | null): T | null => (b ?? a);
+  const pick = <T,>(a: T | null, b: T | null): T | null => b ?? a;
   return {
     numerolote: existing.numerolote,
     cultivar: pick(existing.cultivar, incoming.cultivar),
